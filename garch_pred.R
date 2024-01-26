@@ -18,6 +18,7 @@ log_returns <- function(path_to_csv_file) {
 ####################################################################################
 
 # Selecting conditional volatility model to get PDF statistics for each time stamp:
+
 model_selection <-  function(model = "sGARCH",
                              ts = log_returns,
                              garchOrder = c(1, 1),
@@ -47,6 +48,8 @@ model_selection <-  function(model = "sGARCH",
 
 ####################################################################################
 ####################################################################################
+
+# Getting statistics from conditional volatility model grouped by mean sigma:
 
 
 
