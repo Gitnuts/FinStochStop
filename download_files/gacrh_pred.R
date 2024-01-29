@@ -120,3 +120,229 @@ ks_test <- function(params, target_distribution, num_steps, get_distr = FALSE, g
   ks_statistic <- ks.test(target_distribution, ecdf(final_values))$statistic
   return(ks_statistic)
 }
+
+####################################################################################
+####################################################################################
+
+estimator_seq <- function(sigma.df, estimator, num_steps = 10) {
+
+  sigma_upper_bound <- 5 / num_steps
+  if (estimator == "mean") {
+    estimator_x <- seq(from = sigma.df$ave_mean, to = 0, length.out = 100)
+  } else if (estimator == "sigma") {
+    estimator_x <- seq(from = 0.1*sigma.df$ave_sigma, to = 0.2 * sigma.df$ave_sigma , length.out = 100)
+  } else if (estimator == "shape") {
+    estimator_x <- seq(from = sigma.df$ave_shape -2, to = sigma.df$ave_shape +2, length.out = 100)
+  } else if (estimator == "skew") {
+    estimator_x <- seq(from = (sigma.df$ave_skew-1)/1000, to = abs(sigma.df$ave_skew-1)/1000, length.out = 100)
+  } else if (estimator == "jump_intensity") {
+    estimator_x <- seq(from = 0, to = 0.1, length.out = 100)
+  }
+
+  return(estimator_x)
+}
+
+estimator_local_minimum <- function(estimator_seq, estimator_list, polynomial = 2, get_score = FALSE) {
+
+  estimator.df <- as.data.frame(cbind(estimator_seq, estimator_list))
+  colnames(estimator.df) <- c("estimator", "ks_error")
+  estimator.df$estimator <- as.numeric(estimator.df$estimator)
+  estimator.df$ks_error <- as.numeric(estimator.df$ks_error)
+  estimator.fit <- lm(ks_error ~ poly(estimator, polynomial), data = estimator.df)
+  estimator_fitted_line <- predict(estimator.fit, data = estimator.df)
+  min_estimator <- estimator_seq[which.min(estimator_fitted_line)]
+
+  if (get_score) {
+    return(list(min_estimator, min(estimator_fitted_line)))
+  }
+  return(min_estimator)
+}
+
+single_fit <- function(sigma.df, num_steps = 30, MJD = FALSE) {
+
+
+split.df <- data.frame(sigma_bar = double(), number_of_splits = integer(),
+                       mean = double(), sigma = double(),
+                       shape = double(), skew = double(),
+                       min_jump = double(),
+                       kolmogorov_smirnov_test_score = double(),
+                       adj_kolmogorov_smirnov_test_score = double())
+
+
+for (row in seq(1, nrow(sigma.df), by = 1)) {
+
+  target_distribution <- rsstd(10000, mean = sigma.df[row,]$ave_mean,
+                               sd = sigma.df[row,]$ave_sigma,
+                               nu = sigma.df[row,]$ave_shape,
+                               xi = sigma.df[row,]$ave_skew)
+
+  mean_list <- list()
+  mean_x <- estimator_seq(sigma.df, "mean")
+  for (i in seq_along(mean_x)) {
+    mean_list[i] <- ks_test(c(mean_x[[i]], 0.1), target_distribution, num_steps = num_steps)
+  }
+
+  min_mean <- mean_x[which.min(mean_list)]
+  #print(min_mean)
+
+  sigma_list <- list()
+  sigma_x <- estimator_seq(sigma.df, "sigma", num_steps = num_steps)
+  for (j in seq_along(sigma_x)) {
+    sigma_list[j] <- ks_test(c(min_mean, sigma_x[[j]]), target_distribution, num_steps = num_steps)
+  }
+
+  min_sigma <- estimator_local_minimum(sigma_x, sigma_list, polynomial = 3)
+  #print(min_sigma)
+
+  skew_list <- list()
+  skew_x <- estimator_seq(sigma.df, "skew")
+  for (j in seq_along(skew_x)) {
+    skew_list[j] <- ks_test(c(min_mean, min_sigma, sigma.df[row,]$ave_shape, skew_x[[j]]), target_distribution, num_steps = num_steps)
+  }
+
+  min_skew <- estimator_local_minimum(skew_x, skew_list, polynomial = 3)
+
+  nu_list <- list()
+  nu_x <- estimator_seq(sigma.df, "shape")
+  for (k in seq_along(nu_x)) {
+    nu_list[k] <- ks_test(c(min_mean, min_sigma, nu_x[[k]], min_skew), target_distribution, num_steps = num_steps)
+  }
+
+  min_nu_with_score <- estimator_local_minimum(nu_x, nu_list, polynomial = 5, get_score = TRUE)
+  min_nu <- min_nu_with_score[[1]]
+  if (MJD) {
+    jump_list <- list()
+    jump_x <- estimator_seq(sigma.df, "jump_intensity")
+    for (k in seq_along(jump_x)) {
+      jump_list[k] <- ks_test(c(min_mean, min_sigma, min_nu, min_skew, jump_x[[k]]), target_distribution, num_steps = num_steps, MJD = TRUE)
+    }
+    min_jump_with_score <- estimator_local_minimum(jump_x, jump_list, polynomial = 3, get_score = TRUE)
+    min_jump <- min_jump_with_score[[1]]
+    adj_ks_score <- min_jump_with_score[[2]]
+    ks_score <- min_nu_with_score[[2]]
+  } else {
+    min_jump <- NA_real_
+    adj_ks_score <- NA_real_
+    ks_score <- min_nu_with_score[[2]]
+  }
+
+  split.df[nrow(split.df) + 1,] = c(sigma.df[row,]$sigma_bar, num_steps,
+                                    min_mean, min_sigma, min_nu, min_skew,
+                                    min_jump, ks_score, adj_ks_score)
+  #print(paste("row processed for sigma bar =", sigma.df[row,]$sigma_bar))
+}
+
+  return(split.df)
+}
+
+####################################################################################
+####################################################################################
+
+stop_loss <- function(params, paths, trigger = FALSE, summary = FALSE) {
+
+  take_profit_condition <- params[1]
+  stop_loss_condition <- params[2]
+  upper_trigger <- params[3]
+
+  # Identify the time steps where conditions are met
+  num_paths <- 1000
+  sampled_indices <- sample(seq(ncol(paths)), num_paths)
+
+
+  tp_indices <- which(paths[,sampled_indices] >= take_profit_condition, arr.ind = TRUE)
+  sl_indices <- which(paths[,sampled_indices] <= stop_loss_condition, arr.ind = TRUE)
+  tp_first_incident <- tapply(tp_indices[,1], tp_indices[,2], min)
+  sl_first_incident <- tapply(sl_indices[,1], sl_indices[,2], min)
+
+  fixed_returns <- merge(as.matrix(tp_first_incident),
+                         as.matrix(sl_first_incident),
+                         by=0, all = TRUE)
+
+  fixed_returns <- merge(as.matrix(seq(1, num_paths, length.out = num_paths)),
+                         fixed_returns, by.x = 0, by.y = "Row.names", all = TRUE)
+  fixed_returns <- subset(fixed_returns, select = -c(V1))
+  colnames(fixed_returns) <- c("row", "take_profit_index", "stop_loss_index")
+
+  # if number of parameters is grearer than 2
+  # This snippet finds indeces whether, after triggering a level at timestamp T,
+  # a timesries bottoms down bellow zero at timestamp T + k.
+  # default is long position stop-loss, so to switch to short sell, inequality signs
+  # in ´ut_indices´ and ´ut_sl_indices´ must be turned.
+
+  if (trigger) {
+  ut_indices <- which(paths[,sampled_indices] >= upper_trigger, arr.ind = TRUE)
+  ut_sl_indices <- which(paths[,sampled_indices] < 0, arr.ind = TRUE)
+  ut_first_incident <- tapply(ut_indices[,1], ut_indices[,2], min)
+
+  d <- merge(as.matrix(ut_first_incident), ut_sl_indices, by.x = 0, by.y = "col")
+  d <- d %>%
+    filter(row > V1) %>%
+    group_by(Row.names) %>%
+    summarize(min_column1 = min(row)) %>%
+    left_join(d %>% filter(row > V1), multiple = "any", by = "Row.names")
+
+  d <- merge(as.matrix(ut_first_incident),
+             subset(d, select=-c(row, V1)), by.x = 0, by.y = "Row.names", all = TRUE)
+
+  colnames(d) <- c("row", "upper_trigger_level", "upper_trigger_stop_loss")
+  fixed_returns <- merge(fixed_returns, d, by ='row', all = TRUE)
+
+
+  fixed_returns <- fixed_returns %>%
+    mutate(return = case_when(
+
+      (upper_trigger_level < stop_loss_index | (is.na(stop_loss_index) & !is.na(upper_trigger_level))) & (is.na(take_profit_index) & is.na(upper_trigger_stop_loss)) ~ take_profit_condition/2,
+      (upper_trigger_level < stop_loss_index | (is.na(stop_loss_index) & !is.na(upper_trigger_level))) & (is.na(take_profit_index) & !is.na(upper_trigger_stop_loss)) ~ 0,
+      (upper_trigger_level < stop_loss_index | (is.na(stop_loss_index) & !is.na(upper_trigger_level))) & (!is.na(take_profit_index) & is.na(upper_trigger_stop_loss)) ~ take_profit_condition,
+      (upper_trigger_level < stop_loss_index | (is.na(stop_loss_index) & !is.na(upper_trigger_level))) & (take_profit_index < upper_trigger_stop_loss) ~ take_profit_condition,
+      (upper_trigger_level < stop_loss_index | (is.na(stop_loss_index) & !is.na(upper_trigger_level))) & (take_profit_index > upper_trigger_stop_loss) ~ 0,
+      upper_trigger_level > stop_loss_index | (!is.na(stop_loss_index) & is.na(upper_trigger_level)) ~ stop_loss_condition,
+      TRUE ~ NA_real_
+    ))
+  } else {
+    fixed_returns <- fixed_returns %>%
+    mutate(return = case_when(
+            is.na(take_profit_index) & is.na(stop_loss_index) ~ NA_real_,
+            is.na(take_profit_index) | take_profit_index > stop_loss_index ~ stop_loss_condition,
+            is.na(stop_loss_index) | take_profit_index < stop_loss_index ~ take_profit_condition,
+            TRUE ~ NA_real_
+    ))
+  }
+
+  counts <- table(fixed_returns$return)
+  take_profit_counts <- as.numeric(counts[as.character(take_profit_condition)])
+  stop_loss_counts <- as.numeric(counts[as.character(stop_loss_condition)])
+  upper_trigger_counts <- as.numeric(counts[as.character(take_profit_condition/2)])
+  upper_trigger_stop_loss_counts <- as.numeric(counts[as.character(0)])
+
+  if (is.na(upper_trigger_counts) | is.na(upper_trigger_stop_loss_counts)) {
+    upper_trigger_counts <- 0
+    upper_trigger_stop_loss_counts <- 0
+  }
+
+  if (is.na(take_profit_counts)) {
+    take_profit_counts <- 0
+  }
+
+  penalty_counts <- num_paths - sum(take_profit_counts, stop_loss_counts, upper_trigger_counts, upper_trigger_stop_loss_counts)
+
+  if (penalty_counts > stop_loss_counts) {
+    stop_loss_counts <- penalty_counts
+  }
+
+  score <- sum(take_profit_counts * take_profit_condition,
+               stop_loss_counts * stop_loss_condition,
+               upper_trigger_counts * take_profit_condition/2,
+               upper_trigger_stop_loss_counts * 0)
+
+  if (summary) {
+    print(paste("stop_loss_counts:", stop_loss_counts))
+    print(paste("take_profit_counts:", take_profit_counts))
+    print(paste("upper_trigger_counts:", upper_trigger_counts))
+    print(paste("upper_trigger_stop_loss_counts:", upper_trigger_stop_loss_counts))
+    print(paste("No hits:", penalty_counts))
+    print(paste("return per trade:", score / (num_paths - penalty_counts)))
+  }
+
+  return(score*(-1))
+}
