@@ -331,3 +331,121 @@ stop_loss <- function(params, paths, trigger = FALSE, summary = FALSE) {
 
   return(score*(-1))
 }
+
+####################################################################################
+####################################################################################
+
+jump_diffusion_test <- function(params, num_steps, target_df, sigma_bar, get_paths = FALSE, nsim = 1) {
+
+  # extracting actual highs and lows for sigma_bar from data frame given positive (negative) returns.
+
+  real.lows.positive_returns <- target_df$low_close_ratio[target_df$Sigma > sigma_bar - 0.0005 & target_df$Sigma < sigma_bar & target_df$close_log_return >= 0]
+  real.highs.positive_returns <- target_df$high_close_ratio[target_df$Sigma > sigma_bar - 0.0005 & target_df$Sigma < sigma_bar & target_df$close_log_return >= 0]
+
+  real.lows.negative_returns <- target_df$low_close_ratio[target_df$Sigma > sigma_bar - 0.0005 & target_df$Sigma < sigma_bar & target_df$close_log_return < 0]
+  real.highs.negative_returns <- target_df$high_close_ratio[target_df$Sigma > sigma_bar - 0.0005 & target_df$Sigma < sigma_bar & target_df$close_log_return < 0]
+
+  num_paths <- 10000
+  num_steps <- num_steps
+
+  mu <- params[1]
+  sigma <- params[2]
+  nu <- params[3]
+  theta <- params[4]
+
+  # params vectors contains parameters in order to exctract paths
+  lambda <- params[5]
+  delta <- params[6]
+  tau <- params[7]
+
+  # setting a grid where:
+  #   - lambda := jump intensity, specified by Poisson
+  #   - delta  := jump amplitide, i.e a multiplier for scaled jumps
+  #   - tau    := threshold for returns to be scaled with s.t. global minimum (maximum) of a path
+  #               with positive (negative) end value (i.e. value at time t = T) is scaled by a tau iff
+  #               value of global minimum (maximum) is positive (negative).
+
+  grid_values <- expand.grid(lambda = seq(0, 1, length.out = 10),
+                             delta = seq(0, 1, length.out = 10),
+                             tau = 0.0005
+                             #tau = seq(0, sigma/5, length.out = 10)
+  )
+
+  subtract_min_conditionally <- function(path, tau) {
+    if (min(path) > 0 && tail(path, 1) > 0) {
+      min_index <- which.min(path)
+      path[min_index] <- path[min_index] - tau
+    }
+    path
+  }
+
+  add_max_conditionally <- function(path, tau) {
+    if (max(path) < 0 && tail(path, 1) < 0) {
+      max_index <- which.max(path)
+      path[max_index] <- path[max_index] + tau
+    }
+    path
+  }
+
+  grid_search <- function(grid_value, get_paths = FALSE) {
+
+    lambda <- as.numeric(grid_value["lambda"])
+    delta <- as.numeric(grid_value["delta"])
+    tau <- as.numeric(grid_value["tau"])
+
+    for (i in 1:nsim) {
+      paths <- replicate(num_paths, {
+
+        log_returns <- rvg(n = num_steps, vgC = mu, sigma = sigma, nu = nu, theta = theta)
+        jumps <- rpois(num_steps, lambda = lambda)
+        jumps[as.logical(jumps)] <- rnorm(length(which(jumps != 0)), mean = mu, sd = sigma)
+        cumulative_jumps <- cumsum(jumps)
+
+        cumsum(log_returns) + delta * (cumulative_jumps - mean(cumulative_jumps))
+
+      })
+    }
+
+    paths <- apply(paths, 2, subtract_min_conditionally, tau = tau)
+    paths <- apply(paths, 2, add_max_conditionally, tau = tau)
+
+    # add first row for time step t = 0
+    paths <- rbind(numeric(ncol(paths)), paths)
+
+    if (get_paths) {
+      return(paths)
+    }
+
+    final_values <- paths[num_steps+1,]
+
+    highs.positive_returns <- apply(paths[, which(final_values >= 0)], MARGIN = 2, FUN = max)
+    lows.positive_returns <- apply(paths[, which(final_values >= 0)], MARGIN = 2, FUN = min)
+    highs.negative_returns <- apply(paths[, which(final_values < 0)], MARGIN = 2, FUN = max)
+    lows.negative_returns <- apply(paths[, which(final_values < 0)], MARGIN = 2, FUN = min)
+
+    # Due to non-continiuos nature of distributions, i.e. distribution contains ties (repeated values),
+    # k-s test is not robust solution for this task. Instead, Wasserstein distance is calculated between
+    # two samples.
+
+    ks_res <- c(
+         wasserstein1d(real.highs.positive_returns, highs.positive_returns),
+         wasserstein1d(real.lows.positive_returns, lows.positive_returns),
+         wasserstein1d(real.highs.negative_returns, highs.negative_returns),
+         wasserstein1d(real.lows.negative_returns, lows.negative_returns)
+    )
+
+    return(mean(ks_res))
+  }
+
+  if (get_paths && length(params) == 7) {
+    paths <- grid_search(data.frame(lambda=lambda, delta=delta, tau=tau), get_paths = TRUE)
+    return(paths)
+  }
+
+  result <- apply(grid_values, 1, grid_search)
+  grid_results <- cbind(grid_values, result)
+
+  # returns a table with wasserstain scores given parameters
+  return(grid_results)
+
+}
