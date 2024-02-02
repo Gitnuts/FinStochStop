@@ -73,6 +73,11 @@ statsGarch <- functional(preds, precision_bar = 0.0005) {
 }
 
 ####################################################################################
+#/ ksdiffScore :=
+#/
+#/ returns kolmogorov-smirnov test results by comparing target distribution and
+#/ end values (t = T) of simulated paths. The paths are created in the fashion of
+#/ the Itô process.
 ####################################################################################
 
 library(MASS)
@@ -83,7 +88,7 @@ library(goftest)
 # Example target distribution (replace with your desired distribution)
 # target_distribution <- rsstd(10000, mean = mu_mean, sd = sigma_mean, nu = shape_mean, xi = skew_mean)
 
-ks_test <- function(params, target_distribution, MJD = FALSE, get_distr = FALSE, get_paths = FALSE, num_steps, nsim = 1) {
+ksdiffScore <- function(params, target_distribution, get_paths = FALSE, num_steps, nsim = 1) {
 
   num_paths <- 10000
   num_steps <- num_steps
@@ -96,36 +101,17 @@ ks_test <- function(params, target_distribution, MJD = FALSE, get_distr = FALSE,
     sigma <- params[2]
     nu <- params[3]
     theta <- params[4]
-    lambda <- params[5]
-
 
     if (length(params) > 2) {
       log_returns <- rvg(n = num_steps, vgC = mu, sigma = sigma, nu = nu, theta = theta)
     } else {
       log_returns <- rnorm(num_steps, mean = mu, sd = sigma)
     }
-
-    if (MJD & length(params) > 4) {
-      jumps <- rpois(num_steps, lambda = lambda)
-      jumps[as.logical(jumps)] <- rnorm(length(which(jumps != 0)), mean = mu, sd = sigma)
-      cumsum(jumps) + cumsum(log_returns)
-
-    } else {
-      cumsum(log_returns)
-    }
-
+    cumsum(log_returns)
   })
 
   if (get_paths) {
     return(paths)
-  }
-
-  # Extract final values
-  final_values <- paths[num_steps,]
-  highest_points <- apply(paths, MARGIN = 2, FUN = max)
-
-  if (get_distr) {
-    return(final_values)
   }
 
   ks_statistic <- ks.test(target_distribution, ecdf(final_values))$statistic
@@ -133,11 +119,21 @@ ks_test <- function(params, target_distribution, MJD = FALSE, get_distr = FALSE,
   }
 
   return(mean(unlist(ks_statistic_list)))
-}}
+}
 
-estimator_seq <- function(sigma.df, estimator, num_steps = 10) {
+####################################################################################
+#/ seqdiffOptim :=
+#/
+#/ sequentially finds minimums for each moment in the order of moment ordinals.
+#/ Moments are re-optimised by simple regression model with polynomials
+#/ (see regScore function).
+####################################################################################
 
-  sigma_upper_bound <- 5 / num_steps
+estimatorSeq <- function(sigma.df, estimator) {
+
+  # NB! These sequances are adjusted for num_steps = 30. The function will be further refactored
+  # to fit variuos values of num_steps.
+
   if (estimator == "mean") {
     estimator_x <- seq(from = sigma.df$ave_mean, to = 0, length.out = 100)
   } else if (estimator == "sigma") {
@@ -146,84 +142,81 @@ estimator_seq <- function(sigma.df, estimator, num_steps = 10) {
     estimator_x <- seq(from = sigma.df$ave_shape -2, to = sigma.df$ave_shape +2, length.out = 100)
   } else if (estimator == "skew") {
     estimator_x <- seq(from = (sigma.df$ave_skew-1)/1000, to = abs(sigma.df$ave_skew-1)/1000, length.out = 100)
-  } else if (estimator == "lambda") {
-    estimator_x <- seq(from = 0, to = 0.1, length.out = 100)
   }
 
   return(estimator_x)
 }
 
-estimator_local_minimum <- function(estimator_seq, estimator_list, polynomial = 2, get_score = FALSE) {
+regScore <- function(estimator_seq, estimator_list, polynomial = 2, get_score = FALSE) {
+
+  # Trying to find the smallest score using regression with polynomials of estimator
 
   estimator.df <- as.data.frame(cbind(estimator_seq, estimator_list))
-  colnames(estimator.df) <- c("estimator", "ks_error")
+  colnames(estimator.df) <- c("estimator", "score")
   estimator.df$estimator <- as.numeric(estimator.df$estimator)
-  estimator.df$ks_error <- as.numeric(estimator.df$ks_error)
-  estimator.fit <- lm(ks_error ~ poly(estimator, polynomial), data = estimator.df)
+  estimator.df$score <- as.numeric(estimator.df$score)
+  estimator.fit <- lm(score ~ poly(estimator, polynomial), data = estimator.df)
   estimator_fitted_line <- predict(estimator.fit, data = estimator.df)
   min_estimator <- estimator_seq[which.min(estimator_fitted_line)]
 
   if (get_score) {
     return(list(min_estimator, min(estimator_fitted_line)))
   }
+
   return(min_estimator)
 }
 
-single_fit <- function(sigma.df, num_steps = 30, MJD = FALSE) {
+seqdiffOptim <- function(sigma.df, num_steps = 30) {
+
+  split.df <- data.frame(sigma_bar = double(), number_of_splits = integer(),
+                         mean = double(), sigma = double(),
+                         shape = double(), skew = double())
 
 
-split.df <- data.frame(sigma_bar = double(), number_of_splits = integer(),
-                       mean = double(), sigma = double(),
-                       shape = double(), skew = double(),
-                       lambda = double())
+  for (row in seq(1, nrow(sigma.df), by = 1)) {
+
+    target_distribution <- rsstd(10000, mean = sigma.df[row,]$ave_mean,
+                                 sd = sigma.df[row,]$ave_sigma,
+                                 nu = sigma.df[row,]$ave_shape,
+                                 xi = sigma.df[row,]$ave_skew)
 
 
-for (row in seq(1, nrow(sigma.df), by = 1)) {
+    mean_x <- estimatorSeq(sigma.df[row,], estimator = "mean")
+    mean_list <- sapply(mean_x, function(mean_val) ksdiffScore(c(mean_val, 0.1), target_distribution, num_steps = num_steps))
+    min_mean <- mean_x[which.min(mean_list)]
 
-  target_distribution <- rsstd(10000, mean = sigma.df[row,]$ave_mean,
-                               sd = sigma.df[row,]$ave_sigma,
-                               nu = sigma.df[row,]$ave_shape,
-                               xi = sigma.df[row,]$ave_skew)
+    sigma_x <- estimatorSeq(sigma.df[row,], estimator = "sigma")
+    sigma_list <- sapply(sigma_x, function(sigma_val) ksdiffScore(c(min_mean, sigma_val), target_distribution, num_steps = num_steps))
+    min_sigma <- regScore(sigma_x, sigma_list, polynomial = 3)
 
+    skew_x <- estimatorSeq(sigma.df[row,], estimator = "skew")
+    skew_list <- sapply(skew_x, function(skew_val) ksdiffScore(c(min_mean, min_sigma, sigma.df[row,]$ave_shape, skew_val), target_distribution, num_steps = num_steps))
+    min_skew <- regScore(skew_x, skew_list, polynomial = 3)
 
-  mean_x <- estimator_seq(sigma.df, "mean")
-  mean_list <- sapply(mean_x, function(mean_val) ks_test(c(mean_val, 0.1), target_distribution, num_steps = num_steps))
-  min_mean <- mean_x[which.min(mean_list)]
+    nu_x <- estimatorSeq(sigma.df[row,], estimator = "shape")
+    nu_list <- sapply(nu_x, function(nu_val) ksdiffScore(c(min_mean, min_sigma, nu_val, min_skew), target_distribution, num_steps = num_steps))
+    min_nu <- regScore(nu_x, nu_list, polynomial = 3)
 
-  sigma_x <- estimator_seq(sigma.df, "sigma", num_steps = num_steps)
-  sigma_list <- sapply(sigma_x, function(sigma_val) ks_test(c(min_mean, sigma_val), target_distribution, num_steps = num_steps))
-  min_sigma <- estimator_local_minimum(sigma_x, sigma_list, polynomial = 3)
+    split.df[nrow(split.df) + 1,] <- c(sigma.df[row,]$sigma_bar, num_steps,
+                                      min_mean, min_sigma, min_nu, min_skew)
 
-  skew_x <- estimator_seq(sigma.df, "skew")
-  skew_list <- sapply(skew_x, function(skew_val) ks_test(c(min_mean, min_sigma, sigma.df[row,]$ave_shape, skew_val), target_distribution, num_steps = num_steps))
-  min_skew <- estimator_local_minimum(skew_x, skew_list, polynomial = 3)
-
-  nu_x <- estimator_seq(sigma.df, "shape")
-  nu_list <- sapply(nu_x, function(nu_val) ks_test(c(min_mean, min_sigma, nu_val, min_skew), target_distribution, num_steps = num_steps))
-  min_nu <- estimator_local_minimum(nu_x, nu_list, polynomial = 3)
-
-  if (MJD) {
-    lambda_x <- estimator_seq(sigma.df, "lambda")
-    lambda_list <- sapply(lambda_x, function(lambda_val) ks_test(c(min_mean, min_sigma, min_nu, min_skew, lambda_val), target_distribution, num_steps = num_steps, MJD = TRUE))
-    min_lambda <- estimator_local_minimum(lambda_x, lambda_list, polynomial = 3)
-
-  } else {
-    min_lambda <- NA_real_
+    print(paste("row processed for sigma bar =", sigma.df[row,]$sigma_bar))
   }
-
-  split.df[nrow(split.df) + 1,] = c(sigma.df[row,]$sigma_bar, num_steps,
-                                    min_mean, min_sigma, min_nu, min_skew,
-                                    min_lambda)
-  #print(paste("row processed for sigma bar =", sigma.df[row,]$sigma_bar))
-}
 
   return(split.df)
 }
 
 ####################################################################################
+#/ stopLoss :=
+#/
+#/ returns strategy score under stop loss regulation given paths simulated
+#/ in diffOptim or jumpdiffOptim functions. The functions utilises penalty score
+#/ by penalising paths that haven't hit neither stop loss nor take profit
+#/ benchmarks. The initial proposition is that long position was taken with stop
+#/ loss being set.
 ####################################################################################
 
-stop_loss <- function(params, paths, trigger = FALSE, summary = FALSE) {
+stopLoss <- function(params, paths, trigger = FALSE, summary = FALSE) {
 
   take_profit_condition <- params[1]
   stop_loss_condition <- params[2]
@@ -250,7 +243,7 @@ stop_loss <- function(params, paths, trigger = FALSE, summary = FALSE) {
 
   # if number of parameters is grearer than 2
   # This snippet finds indeces whether, after triggering a level at timestamp T,
-  # a timesries bottoms down bellow zero at timestamp T + k.
+  # a time-series bottoms down bellow zero at timestamp T + k.
   # default is long position stop-loss, so to switch to short sell, inequality signs
   # in ´ut_indices´ and ´ut_sl_indices´ must be turned.
 
@@ -333,11 +326,20 @@ stop_loss <- function(params, paths, trigger = FALSE, summary = FALSE) {
 }
 
 ####################################################################################
+#/ jumpdiffOptim :=
+#/
+#/ simulates 3 more parameters (jump intensity, jump amplitude and
+#/ threshold) with grid search. The point is to add jumps similar to the Merton
+#/ jump-diffusion but here jumps are scaled. This ensures that cumulative returns of
+#/ the jumps is mean-reverting, thus having less impact on the end value (t = T)
+#/ distribution while paths' ln(high/open) and ln(low/open) may potentially approach
+#/ their real counterparts from a dataset.
+#/ The function returns a table with wasserstein distances given parameters.
 ####################################################################################
 
-jump_diffusion_test <- function(params, num_steps, target_df, sigma_bar, get_paths = FALSE, nsim = 1) {
+jumpdiffOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FALSE, nsim = 1) {
 
-  # extracting actual highs and lows for sigma_bar from data frame given positive (negative) returns.
+  # extracting actual highs and lows for sigma_bar from a data frame given positive (negative) returns.
 
   real.lows.positive_returns <- target_df$low_close_ratio[target_df$Sigma > sigma_bar - 0.0005 & target_df$Sigma < sigma_bar & target_df$close_log_return >= 0]
   real.highs.positive_returns <- target_df$high_close_ratio[target_df$Sigma > sigma_bar - 0.0005 & target_df$Sigma < sigma_bar & target_df$close_log_return >= 0]
@@ -353,22 +355,21 @@ jump_diffusion_test <- function(params, num_steps, target_df, sigma_bar, get_pat
   nu <- params[3]
   theta <- params[4]
 
-  # if defined, allows to extract paths for the model
+  # params vectors contains parameters in order to extract paths
   lambda <- params[5]
   delta <- params[6]
   tau <- params[7]
 
   # setting a grid where:
   #   - lambda := jump intensity, specified by Poisson
-  #   - delta  := jump amplitide, i.e a multiplier for scaled jumps
+  #   - delta  := jump amplitude, i.e a multiplier for scaled jumps
   #   - tau    := threshold for returns to be scaled with s.t. global minimum (maximum) of a path
   #               with positive (negative) end value (i.e. value at time t = T) is scaled by a tau iff
   #               value of global minimum (maximum) is positive (negative).
 
   grid_values <- expand.grid(lambda = seq(0, 1, length.out = 10),
                              delta = seq(0, 1, length.out = 10),
-                             tau = 0.0005
-                             #tau = seq(0, sigma/5, length.out = 10)
+                             tau = seq(0, sigma/5, length.out = 10)
   )
 
   subtract_min_conditionally <- function(path, tau) {
@@ -427,14 +428,14 @@ jump_diffusion_test <- function(params, num_steps, target_df, sigma_bar, get_pat
     # k-s test is not robust solution for this task. Instead, Wasserstein distance is calculated between
     # two samples.
 
-    ks_res <- c(
+    ws_res <- c(
          wasserstein1d(real.highs.positive_returns, highs.positive_returns),
          wasserstein1d(real.lows.positive_returns, lows.positive_returns),
          wasserstein1d(real.highs.negative_returns, highs.negative_returns),
          wasserstein1d(real.lows.negative_returns, lows.negative_returns)
     )
 
-    return(mean(ks_res))
+    return(mean(ws_res))
   }
 
   if (get_paths && length(params) == 7) {
@@ -451,14 +452,22 @@ jump_diffusion_test <- function(params, num_steps, target_df, sigma_bar, get_pat
 }
 
 ####################################################################################
+#/ distrCompare :=
+#/
+#/ plots underlying probabilities. The function plots 5 figures that:
+#/    1) compare pdfs of end values (t = T),
+#/    2) compare pdfs of the largest points (highs) given positive end value,
+#/    3) compare pdfs of the smallest points (lows) given positive end value,
+#/    4) compare pdfs of the largest points (highs) given negative end value,
+#/    5) compare pdfs of the smallest points (lows) given negative end value.
 ####################################################################################
 
 distrCompare <- function(params, target_distribution, num_steps, target_df = FALSE, sigma_bar = FALSE) {
 
   if (is.data.frame(target_df) & is.double(sigma_bar) & length(params) == 7) {
-    paths <- jump_diffusion_test(params, num_steps, target_df, 0.0035, nsim = 1, get_paths = TRUE)
+    paths <- jumpdiffOptim(params, num_steps, target_df, sigma_bar, nsim = 1, get_paths = TRUE)
   } else {
-    paths <- ks_test(params = params, target_distribution = target_distribution, num_steps = 30, get_paths = TRUE)
+    paths <- ksdiffScore(params = params, target_distribution = target_distribution, num_steps = num_steps, get_paths = TRUE)
     paths <- rbind(numeric(ncol(paths)), paths)
   }
 
