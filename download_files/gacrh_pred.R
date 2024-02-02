@@ -353,7 +353,7 @@ jump_diffusion_test <- function(params, num_steps, target_df, sigma_bar, get_pat
   nu <- params[3]
   theta <- params[4]
 
-  # params vectors contains parameters in order to exctract paths
+  # if defined, allows to extract paths for the model
   lambda <- params[5]
   delta <- params[6]
   tau <- params[7]
@@ -447,5 +447,54 @@ jump_diffusion_test <- function(params, num_steps, target_df, sigma_bar, get_pat
 
   # returns a table with wasserstain scores given parameters
   return(grid_results)
+
+}
+
+####################################################################################
+####################################################################################
+
+distrCompare <- function(params, target_distribution, num_steps, target_df = FALSE, sigma_bar = FALSE) {
+
+  if (is.data.frame(target_df) & is.double(sigma_bar) & length(params) == 7) {
+    paths <- jump_diffusion_test(params, num_steps, target_df, 0.0035, nsim = 1, get_paths = TRUE)
+  } else {
+    paths <- ks_test(params = params, target_distribution = target_distribution, num_steps = 30, get_paths = TRUE)
+    paths <- rbind(numeric(ncol(paths)), paths)
+  }
+
+  final_values <- paths[num_steps+1,]
+
+  lows.positive_returns <- apply(paths[, which(final_values >= 0)], MARGIN = 2, FUN = min)
+  highs.positive_returns <- apply(paths[, which(final_values >= 0)], MARGIN = 2, FUN = max)
+
+  lows.negative_returns <- apply(paths[, which(final_values < 0)], MARGIN = 2, FUN = min)
+  highs.negative_returns <- apply(paths[, which(final_values < 0)], MARGIN = 2, FUN = max)
+
+  real.lows.positive_returns <- target_df$low_close_ratio[target_df$Sigma > sigma_bar - 0.0005 & target_df$Sigma < sigma_bar & target_df$close_log_return >= 0]
+  real.highs.positive_returns <- target_df$high_close_ratio[target_df$Sigma > sigma_bar - 0.0005 & target_df$Sigma < sigma_bar & target_df$close_log_return >= 0]
+
+  real.lows.negative_returns <- target_df$low_close_ratio[target_df$Sigma > sigma_bar - 0.0005 & target_df$Sigma < sigma_bar & target_df$close_log_return < 0]
+  real.highs.negative_returns <- target_df$high_close_ratio[target_df$Sigma > sigma_bar - 0.0005 & target_df$Sigma < sigma_bar & target_df$close_log_return < 0]
+
+  par(mfrow=c(5,1))
+  hist(final_values, breaks = 100, col = "lightblue", border = "pink", probability = TRUE)
+  lines(density(final_values), col = "red", lwd = 2)
+  lines(density(target_distribution), lwd = 2)
+
+  hist(lows.positive_returns, breaks = 100, col = "lightblue", border = "pink", probability = TRUE)
+  lines(density(lows.positive_returns), col = "red", lwd = 2)
+  lines(density(na.omit(real.lows.positive_returns)), lwd = 2)
+
+  hist(highs.positive_returns, breaks = 100, col = "lightblue", border = "pink", probability = TRUE)
+  lines(density(highs.positive_returns), col = "red", lwd = 2)
+  lines(density(na.omit(real.highs.positive_returns)), lwd = 2)
+
+  hist(lows.negative_returns, breaks = 100, col = "lightblue", border = "pink", probability = TRUE)
+  lines(density(lows.negative_returns), col = "red", lwd = 2)
+  lines(density(na.omit(real.lows.negative_returns)), lwd = 2)
+
+  hist(highs.negative_returns, breaks = 100, col = "lightblue", border = "pink", probability = TRUE)
+  lines(density(highs.negative_returns), col = "red", lwd = 2)
+  lines(density(na.omit(real.highs.negative_returns)), lwd = 2)
 
 }
