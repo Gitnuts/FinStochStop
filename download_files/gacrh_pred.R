@@ -408,18 +408,34 @@ stopLoss <- function(params, paths, trigger = FALSE, summary = FALSE) {
 }
 
 ####################################################################################
-#/ jumpdiffOptim :=
-#/
-#/ simulates 3 more parameters (jump intensity, jump amplitude and
-#/ threshold) with grid search. The point is to add jumps similar to the Merton
-#/ jump-diffusion but here jumps are scaled. This ensures that cumulative returns of
-#/ the jumps is mean-reverting, thus having less impact on the end value (t = T)
-#/ distribution while paths' ln(high/open) and ln(low/open) may potentially approach
-#/ their real counterparts from a dataset.
-#/ The function returns a table with wasserstein distances given parameters.
-####################################################################################
-
-jumpdiffOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FALSE, nsim = 1) {
+#' Jump-diffusion model optimization
+#'
+#' The function finds the optimal parameters for the jump-diffusion model using grid search.
+#' The jumps are scaled s.t. the cumulative returns of the jumps are mean-reverting. This
+#' ensures that the distribution of the end value (t = num_steps) is less impacted by the jumps, while
+#' the distribution of the log returns of the highs and lows may potentially approach their real counterparts
+#' from a dataset. The function returns a table with the Wasserstein distances given the parameters.
+#'
+#' @param params A vector of parameters for the jump-diffusion model. The vector must contain at least 4 parameters. When
+#' a vector contains 7 parameters with get_paths set to TRUE, the function return the simulated paths.
+#' @param num_steps An integer specifying the number of time steps. The default is 30.
+#' @param target_df A data frame containing the variables 'low_close_ratio', 'high_close_ratio', 'Sigma', and 'close_log_return'.
+#' @param sigma_bar A double specifying the sigma bar.
+#' @param get_paths A boolean specifying whether to return the simulated paths. The default is FALSE.
+#' @param nsim An integer specifying the number of simulations. The default is 1.
+#'
+#' @return A table with the Wasserstein distances given the parameters.
+#'
+#' @examples
+#' row <- sigma.df[10,]
+#' params.df <- seqmodelOptim(row, num_steps = 30)
+#' params <- params.df[,c("mean", "sigma", "shape", "skew")]
+#'
+#' jumpdiffOptim(params, num_steps = 30, target_df = df, sigma_bar = row$sigma_bar)
+#'
+#' @import goftest
+#' @export
+jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FALSE, nsim = 1) {
 
   # extracting actual highs and lows for sigma_bar from a data frame given positive (negative) returns.
 
@@ -534,16 +550,31 @@ jumpdiffOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = F
 }
 
 ####################################################################################
-#/ distrCompare :=
-#/
-#/ plots underlying probabilities. The function plots 5 figures that:
-#/    1) compare pdfs of end values (t = T),
-#/    2) compare pdfs of the largest points (highs) given positive end value,
-#/    3) compare pdfs of the smallest points (lows) given positive end value,
-#/    4) compare pdfs of the largest points (highs) given negative end value,
-#/    5) compare pdfs of the smallest points (lows) given negative end value.
-####################################################################################
-
+#' Distribution comparison
+#'
+#' This function takes a vector of parameters 'params' and a vector of the target distribution 'target_distribution'
+#' and plots the underlying probabilities. The function also returns the final values of the simulated paths.
+#'
+#' @param params A vector of parameters for a model. If the length of the vector is 7, the function assumes that the
+#' model is a jump-diffusion model. Otherwise, the function assumes that the model is either a normal distribution or
+#' a Variance-Gamma distribution.
+#' @param target_distribution A vector of the target distribution.
+#' @param num_steps An integer specifying the number of time steps. The default is 30.
+#' @param target_df A data frame containing the variables 'low_close_ratio', 'high_close_ratio', 'Sigma', and 'close_log_return'.
+#' @param sigma_bar A double specifying the sigma bar.
+#' @param get_paths A boolean specifying whether to return the simulated paths. The default is FALSE.
+#'
+#' @examples
+#' row <- sigma.df[10,]
+#' params <- c(row$ave_mean, row$ave_sigma, row$ave_shape, row$ave_skew)
+#' target_distribution <- rsstd(10000, mean = row$ave_mean, sd = row$ave_sigma, nu = row$ave_shape, xi = row$ave_skew)
+#'
+#' distrCompare(params, target_distribution, num_steps = 30, target_df = df, sigma_bar = row$sigma_bar)
+#'
+#' @import MASS
+#' @import fGarch
+#' @import VarianceGamma
+#' @export
 distrCompare <- function(params, target_distribution, num_steps, target_df = FALSE, sigma_bar = FALSE) {
 
   if (is.data.frame(target_df) & is.double(sigma_bar) & length(params) == 7) {
