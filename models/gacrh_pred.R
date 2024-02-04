@@ -230,7 +230,8 @@ seqmodelOptim <- function(sigma.df, num_steps = 30) {
 
 
     mean_x <- estimatorSeq(sigma.df[row,], estimator = "mean")
-    mean_list <- sapply(mean_x, function(mean_val) ksdiffScore(c(mean_val, 0.1), target_distribution, num_steps = num_steps))
+    mean_list <- sapply(mean_x, function(val) ksdiffScore(c(val, sigma.df[row,]$ave_sigma / num_steps),
+                                                          target_distribution, num_steps = num_steps))
     min_mean <- mean_x[which.min(mean_list)]
 
     sigma_x <- estimatorSeq(sigma.df[row,], estimator = "sigma")
@@ -437,7 +438,7 @@ stopLoss <- function(params, paths, trigger = FALSE, summary = FALSE) {
 #' @export
 jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FALSE, nsim = 1) {
 
-  # extracting actual highs and lows for sigma_bar from a data frame given positive (negative) returns.
+  # extracting actual highs and lows for sigma_bar from data frame given positive (negative) returns.
 
   real.lows.positive_returns <- target_df$low_close_ratio[target_df$Sigma > sigma_bar - 0.0005 & target_df$Sigma < sigma_bar & target_df$close_log_return >= 0]
   real.highs.positive_returns <- target_df$high_close_ratio[target_df$Sigma > sigma_bar - 0.0005 & target_df$Sigma < sigma_bar & target_df$close_log_return >= 0]
@@ -448,19 +449,21 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
   num_paths <- 10000
   num_steps <- num_steps
 
-  mu <- params[1]
-  sigma <- params[2]
-  nu <- params[3]
-  theta <- params[4]
+  # at least 4 parameters are needed for grid search
+  mu <- as.numeric(params[1])
+  sigma <- as.numeric(params[2])
+  nu <- as.numeric(params[3])
+  theta <- as.numeric(params[4])
 
-  # params vectors contains parameters in order to extract paths
-  lambda <- params[5]
-  delta <- params[6]
-  tau <- params[7]
-
+  # if number of parameters is 7 and get_paths is set to TRUE, then return the simulated paths
+  if (length(params) == 7) {
+    lambda <- params[5]
+    delta <- params[6]
+    tau <- params[7]
+  }
   # setting a grid where:
   #   - lambda := jump intensity, specified by Poisson
-  #   - delta  := jump amplitude, i.e a multiplier for scaled jumps
+  #   - delta  := jump amplitide, i.e a multiplier for scaled jumps
   #   - tau    := threshold for returns to be scaled with s.t. global minimum (maximum) of a path
   #               with positive (negative) end value (i.e. value at time t = T) is scaled by a tau iff
   #               value of global minimum (maximum) is positive (negative).
@@ -553,7 +556,7 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
 #' Distribution comparison
 #'
 #' This function takes a vector of parameters 'params' and a vector of the target distribution 'target_distribution'
-#' and plots the underlying probabilities. The function also returns the final values of the simulated paths.
+#' and plots the underlying probabilities.
 #'
 #' @param params A vector of parameters for a model. If the length of the vector is 7, the function assumes that the
 #' model is a jump-diffusion model. Otherwise, the function assumes that the model is either a normal distribution or
