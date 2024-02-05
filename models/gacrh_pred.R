@@ -128,13 +128,13 @@ ksdiffScore <- function(params, target_distribution, get_paths = FALSE, num_step
   num_steps <- num_steps
   ks_statistic_list <- list()
 
+  mu <- as.numeric(params[1])
+  sigma <- as.numeric(params[2])
+  nu <- as.numeric(params[3])
+  theta <- as.numeric(params[4])
+
   for (i in 1:nsim) {
   paths <- replicate(num_paths, {
-
-    mu <- params[1]
-    sigma <- params[2]
-    nu <- params[3]
-    theta <- params[4]
 
     if (length(params) > 2) {
       log_returns <- rvg(n = num_steps, vgC = mu, sigma = sigma, nu = nu, theta = theta)
@@ -148,8 +148,9 @@ ksdiffScore <- function(params, target_distribution, get_paths = FALSE, num_step
     return(paths)
   }
 
-  ks_statistic <- ks.test(target_distribution, ecdf(final_values))$statistic
-  ks_statistic_list[i] <- ks_statistic
+    final_values <- paths[num_steps,]
+    ks_statistic <- ks.test(target_distribution, ecdf(final_values))$statistic
+    ks_statistic_list[i] <- ks_statistic
   }
 
   return(mean(unlist(ks_statistic_list)))
@@ -470,7 +471,8 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
 
   grid_values <- expand.grid(lambda = seq(0, 1, length.out = 10),
                              delta = seq(0, 1, length.out = 10),
-                             tau = seq(0, sigma/5, length.out = 10)
+                             #tau = 0
+                             tau = seq(0, 0.001, length.out = 10)
   )
 
   subtract_min_conditionally <- function(path, tau) {
@@ -508,8 +510,10 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
       })
     }
 
-    paths <- apply(paths, 2, subtract_min_conditionally, tau = tau)
-    paths <- apply(paths, 2, add_max_conditionally, tau = tau)
+    if (tau > 0) {
+      paths <- apply(paths, 2, subtract_min_conditionally, tau = tau)
+      paths <- apply(paths, 2, add_max_conditionally, tau = tau)
+    }
 
     # add first row for time step t = 0
     paths <- rbind(numeric(ncol(paths)), paths)
@@ -520,8 +524,8 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
 
     final_values <- paths[num_steps+1,]
 
-    highs.positive_returns <- apply(paths[, which(final_values >= 0)], MARGIN = 2, FUN = max)
     lows.positive_returns <- apply(paths[, which(final_values >= 0)], MARGIN = 2, FUN = min)
+    highs.positive_returns <- apply(paths[, which(final_values >= 0)], MARGIN = 2, FUN = max)
     highs.negative_returns <- apply(paths[, which(final_values < 0)], MARGIN = 2, FUN = max)
     lows.negative_returns <- apply(paths[, which(final_values < 0)], MARGIN = 2, FUN = min)
 
@@ -536,7 +540,10 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
          wasserstein1d(real.lows.negative_returns, lows.negative_returns)
     )
 
-    return(mean(ws_res))
+    ks_statistic <- ks.test(target_distribution, ecdf(final_values))$statistic
+    res <- c(ks_statistic, mean(ws_res))
+
+    return(res)
   }
 
   if (get_paths && length(params) == 7) {
@@ -544,7 +551,10 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
     return(paths)
   }
 
-  result <- apply(grid_values, 1, grid_search)
+  result <- t(apply(grid_values, 1, grid_search))
+  result <- as.data.frame(result)
+  colnames(result) <- c("ks_statistic", "wassershtein_distance")
+
   grid_results <- cbind(grid_values, result)
 
   # returns a table with wasserstain scores given parameters
@@ -581,7 +591,7 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
 distrCompare <- function(params, target_distribution, num_steps, target_df = FALSE, sigma_bar = FALSE) {
 
   if (is.data.frame(target_df) & is.double(sigma_bar) & length(params) == 7) {
-    paths <- jumpdiffOptim(params, num_steps, target_df, sigma_bar, nsim = 1, get_paths = TRUE)
+    paths <- jdmodelOptim(params, num_steps, target_df, sigma_bar, nsim = 1, get_paths = TRUE)
   } else {
     paths <- ksdiffScore(params = params, target_distribution = target_distribution, num_steps = num_steps, get_paths = TRUE)
     paths <- rbind(numeric(ncol(paths)), paths)
