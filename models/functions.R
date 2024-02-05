@@ -7,11 +7,11 @@
 #' @return A time series of log returns.
 #'
 #' @examples
-#' log_returns <- calculate_log_returns("close_price.csv")
+#' log_returns <- logReturns("close_price.csv")
 #'
 #' @import xts
 #' @export
-log_returns <- function(path_to_csv_file) {
+logReturns <- function(path_to_csv_file) {
 
   df <- read.csv(path_to_csv_file, header=TRUE, sep=",")
   df$timestamp <- as.POSIXct(df$timestamp, format = "%Y-%m-%d %H:%M:%S")
@@ -23,8 +23,7 @@ log_returns <- function(path_to_csv_file) {
 }
 
 ####################################################################################
-#'
-#' Model selection for GARCH
+#' Selecting the best GARCH model and making parameter predictions with rolling window.
 #'
 #' This function takes a data frame 'df' and fits a GARCH model to the log returns. The function
 #' returns a data frame with the fitted model's parameters and the predicted conditional variance. The default
@@ -35,18 +34,19 @@ log_returns <- function(path_to_csv_file) {
 #' @param garchOrder A vector (p,q) of length 2 specifying the GARCH order. Default is c(1, 1).
 #' @param armaOrder A vector (p,q) of length 2 specifying the ARMA order. Default is c(0, 0).
 #' @param distribution.model A string specifying the distribution model. Default is "sstd".
+#' @param data_size A double specifying the size of the data. Default is 0.25. Maximum is 1.
 #'
 #' @return A data frame with columns 'Sigma', 'Mu', 'Shape', and 'Skew'. The function also prints
 #' the mean squared error of the model.
 #'
 #' @examples
-#' preds <- model_selection(model = "sGARCH", garchOrder = c(1, 1), armaOrder = c(0, 0), distribution.model = "sstd")
+#' preds <- modelPrediction(model = "sGARCH", garchOrder = c(1, 1), armaOrder = c(0, 0), distribution.model = "sstd")
 #'
 #' @import fGarch
 #' @import rugarch
 #' @export
-model_selection <-  function(log_returns, model = "sGARCH", garchOrder = c(1, 1), armaOrder = c(0, 0),
-                             distribution.model = "std") {
+modelPrediction <- function(log_returns, model = "sGARCH", garchOrder = c(1, 1), armaOrder = c(0, 0),
+                             distribution.model = "std", data_size = 0.25) {
   garch_model <- ugarchspec(
       variance.model = list(model = model, garchOrder = garchOrder),
       mean.model = list(armaOrder),
@@ -54,7 +54,7 @@ model_selection <-  function(log_returns, model = "sGARCH", garchOrder = c(1, 1)
     )
 
   garchroll <- ugarchroll(spec = garch_model,
-                          data = log_returns[1:(nrow(log_returns)/4 + 2016)],
+                          data = log_returns[1:(nrow(log_returns) * min(data_size, 1))],
                           n.start = 2016,
                           refit.window = "moving", refit.every = 7*288)
 
@@ -464,7 +464,7 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
   }
   # setting a grid where:
   #   - lambda := jump intensity, specified by Poisson
-  #   - delta  := jump amplitide, i.e a multiplier for scaled jumps
+  #   - delta  := jump amplitude, i.e a multiplier for scaled jumps
   #   - tau    := threshold for returns to be scaled with s.t. global minimum (maximum) of a path
   #               with positive (negative) end value (i.e. value at time t = T) is scaled by a tau iff
   #               value of global minimum (maximum) is positive (negative).
