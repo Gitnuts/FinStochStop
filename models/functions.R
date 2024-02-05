@@ -17,7 +17,7 @@ logReturns <- function(path_to_csv_file) {
   df$timestamp <- as.POSIXct(df$timestamp, format = "%Y-%m-%d %H:%M:%S")
   df <- na.omit(df)
   df$log_returns <- append(diff(log(df$close_price)), 0, 0)
-  xts_log_returns <- xts(df$log_returns, order.by = df$timestamp)
+  xts_log_returns <- xts::xts(df$log_returns, order.by = df$timestamp)
 
   return(xts_log_returns)
 }
@@ -40,25 +40,25 @@ logReturns <- function(path_to_csv_file) {
 #' the mean squared error of the model.
 #'
 #' @examples
-#' preds <- modelPrediction(model = "sGARCH", garchOrder = c(1, 1), armaOrder = c(0, 0), distribution.model = "sstd")
+#' preds <- modelPrediction(log_returns, model = "sGARCH", garchOrder = c(1, 1), armaOrder = c(0, 0), distribution.model = "sstd", data_size = 0.25)
 #'
 #' @import fGarch
 #' @import rugarch
 #' @export
 modelPrediction <- function(log_returns, model = "sGARCH", garchOrder = c(1, 1), armaOrder = c(0, 0),
                              distribution.model = "std", data_size = 0.25) {
-  garch_model <- ugarchspec(
+  garch_model <- rugarch::ugarchspec(
       variance.model = list(model = model, garchOrder = garchOrder),
       mean.model = list(armaOrder),
       distribution.model = distribution.model
     )
 
-  garchroll <- ugarchroll(spec = garch_model,
+  garchroll <- rugarch::ugarchroll(spec = garch_model,
                           data = log_returns[1:(nrow(log_returns) * min(data_size, 1))],
                           n.start = 2016,
                           refit.window = "moving", refit.every = 7*288)
 
-  preds <- as.data.frame(garchroll)
+  preds <- as.data.frame(garchroll@forecast$density)
   e  <- preds$Realized - preds$Mu
   d  <- e^2 - preds$Sigma^2
 
@@ -78,7 +78,7 @@ modelPrediction <- function(log_returns, model = "sGARCH", garchOrder = c(1, 1),
 #' @return A data frame with columns 'sigma_bar', 'ave_mean', 'ave_sigma', 'ave_shape', and 'ave_skew'.
 #'
 #' @examples
-#' preds <- model_selection(model = "sGARCH", garchOrder = c(1, 1), armaOrder = c(0, 0), distribution.model = "sstd")
+#' preds <- modelPrediction(model = "sGARCH", garchOrder = c(1, 1), armaOrder = c(0, 0), distribution.model = "sstd")
 #' sigma.df <- getSigma(preds, precision_bar = 0.0005)
 #'
 #' @import dplyr
@@ -89,16 +89,18 @@ getSigma <- function (preds, precision_bar = 0.0005) {
   sigma.df <- seq(from = precision_bar, to = round(max(preds$Sigma), 3), by = precision_bar) %>%
     tibble(sigma_bar = .) %>%
     mutate(
-      ave_mean = map_dbl(sigma_bar, ~ mean(preds$Mu[preds$Sigma > (.x - precision_bar) & preds$Sigma < .x])),
-      ave_sigma = map_dbl(sigma_bar, ~ mean(preds$Sigma[preds$Sigma > (.x - precision_bar) & preds$Sigma < .x])),
-      ave_shape = map_dbl(sigma_bar, ~ mean(preds$Shape[preds$Sigma > (.x - precision_bar) & preds$Sigma < .x])),
-      ave_skew = map_dbl(sigma_bar, ~ mean(preds$Skew[preds$Sigma > (.x - precision_bar) & preds$Sigma < .x]))
+      ave_mean = purrr::map_dbl(sigma_bar, ~ mean(preds$Mu[preds$Sigma > (.x - precision_bar) & preds$Sigma < .x])),
+      ave_sigma = purrr::map_dbl(sigma_bar, ~ mean(preds$Sigma[preds$Sigma > (.x - precision_bar) & preds$Sigma < .x])),
+      ave_shape = purrr::map_dbl(sigma_bar, ~ mean(preds$Shape[preds$Sigma > (.x - precision_bar) & preds$Sigma < .x])),
+      ave_skew = purrr::map_dbl(sigma_bar, ~ mean(preds$Skew[preds$Sigma > (.x - precision_bar) & preds$Sigma < .x]))
     ) %>%
     bind_rows(sigma.df)
   return(sigma.df)
 }
 
 ####################################################################################
+#' Calculates Kolmogorov-Smirnov test statistic
+#'
 #' Calculate Kolmogorov-Smirnov test statistic for a the target distribution and the final values
 #' of the simulated paths using a given set of parameters. The test is performed nsim times. The paths are
 #' following an Itô process for the normal distribution and a Variance-Gamma process for the Variance-Gamma.
@@ -137,9 +139,9 @@ ksdiffScore <- function(params, target_distribution, get_paths = FALSE, num_step
   paths <- replicate(num_paths, {
 
     if (length(params) > 2) {
-      log_returns <- rvg(n = num_steps, vgC = mu, sigma = sigma, nu = nu, theta = theta)
+      log_returns <- VarianceGamma::rvg(n = num_steps, vgC = mu, sigma = sigma, nu = nu, theta = theta)
     } else {
-      log_returns <- rnorm(num_steps, mean = mu, sd = sigma)
+      log_returns <- stats::rnorm(num_steps, mean = mu, sd = sigma)
     }
     cumsum(log_returns)
   })
@@ -149,7 +151,7 @@ ksdiffScore <- function(params, target_distribution, get_paths = FALSE, num_step
   }
 
     final_values <- paths[num_steps,]
-    ks_statistic <- ks.test(target_distribution, ecdf(final_values))$statistic
+    ks_statistic <- stats::ks.test(target_distribution, stats::ecdf(final_values))$statistic
     ks_statistic_list[i] <- ks_statistic
   }
 
@@ -184,8 +186,8 @@ regScore <- function(estimator_seq, estimator_list, polynomial = 2, get_score = 
   colnames(estimator.df) <- c("estimator", "score")
   estimator.df$estimator <- as.numeric(estimator.df$estimator)
   estimator.df$score <- as.numeric(estimator.df$score)
-  estimator.fit <- lm(score ~ poly(estimator, polynomial), data = estimator.df)
-  estimator_fitted_line <- predict(estimator.fit, data = estimator.df)
+  estimator.fit <- stats::lm(score ~ stats::poly(estimator, polynomial), data = estimator.df)
+  estimator_fitted_line <- stats::predict(estimator.fit, data = estimator.df)
   min_estimator <- estimator_seq[which.min(estimator_fitted_line)]
 
   if (get_score) {
@@ -194,6 +196,7 @@ regScore <- function(estimator_seq, estimator_list, polynomial = 2, get_score = 
 
   return(min_estimator)
 }
+
 
 #' Sequential model optimization
 #'
@@ -224,7 +227,7 @@ seqmodelOptim <- function(sigma.df, num_steps = 30) {
 
   for (row in seq(1, nrow(sigma.df), by = 1)) {
 
-    target_distribution <- rsstd(10000, mean = sigma.df[row,]$ave_mean,
+    target_distribution <- fGarch::rsstd(10000, mean = sigma.df[row,]$ave_mean,
                                  sd = sigma.df[row,]$ave_sigma,
                                  nu = sigma.df[row,]$ave_shape,
                                  xi = sigma.df[row,]$ave_skew)
@@ -433,9 +436,9 @@ stopLoss <- function(params, paths, trigger = FALSE, summary = FALSE) {
 #' params.df <- seqmodelOptim(row, num_steps = 30)
 #' params <- params.df[,c("mean", "sigma", "shape", "skew")]
 #'
-#' jumpdiffOptim(params, num_steps = 30, target_df = df, sigma_bar = row$sigma_bar)
+#' new_params <- jumpdiffOptim(params, num_steps = 30, target_df = df, sigma_bar = row$sigma_bar)
 #'
-#' @import goftest
+#' @import transport
 #' @export
 jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FALSE, nsim = 1) {
 
@@ -458,9 +461,9 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
 
   # if number of parameters is 7 and get_paths is set to TRUE, then return the simulated paths
   if (length(params) == 7) {
-    lambda <- params[5]
-    delta <- params[6]
-    tau <- params[7]
+    lambda <- as.numeric(params[5])
+    delta <- as.numeric(params[6])
+    tau <- as.numeric(params[7])
   }
   # setting a grid where:
   #   - lambda := jump intensity, specified by Poisson
@@ -471,7 +474,6 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
 
   grid_values <- expand.grid(lambda = seq(0, 1, length.out = 10),
                              delta = seq(0, 1, length.out = 10),
-                             #tau = 0
                              tau = seq(0, 0.001, length.out = 10)
   )
 
@@ -500,9 +502,9 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
     for (i in 1:nsim) {
       paths <- replicate(num_paths, {
 
-        log_returns <- rvg(n = num_steps, vgC = mu, sigma = sigma, nu = nu, theta = theta)
-        jumps <- rpois(num_steps, lambda = lambda)
-        jumps[as.logical(jumps)] <- rnorm(length(which(jumps != 0)), mean = mu, sd = sigma)
+        log_returns <- VarianceGamma::rvg(n = num_steps, vgC = mu, sigma = sigma, nu = nu, theta = theta)
+        jumps <- stats::rpois(num_steps, lambda = lambda)
+        jumps[as.logical(jumps)] <- stats::rnorm(length(which(jumps != 0)), mean = mu, sd = sigma)
         cumulative_jumps <- cumsum(jumps)
 
         cumsum(log_returns) + delta * (cumulative_jumps - mean(cumulative_jumps))
@@ -534,13 +536,13 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
     # two samples.
 
     ws_res <- c(
-         wasserstein1d(real.highs.positive_returns, highs.positive_returns),
-         wasserstein1d(real.lows.positive_returns, lows.positive_returns),
-         wasserstein1d(real.highs.negative_returns, highs.negative_returns),
-         wasserstein1d(real.lows.negative_returns, lows.negative_returns)
+         transport::wasserstein1d(real.highs.positive_returns, highs.positive_returns),
+         transport::wasserstein1d(real.lows.positive_returns, lows.positive_returns),
+         transport::wasserstein1d(real.highs.negative_returns, highs.negative_returns),
+         transport::wasserstein1d(real.lows.negative_returns, lows.negative_returns)
     )
 
-    ks_statistic <- ks.test(target_distribution, ecdf(final_values))$statistic
+    ks_statistic <- stats::ks.test(target_distribution, stats::ecdf(final_values))$statistic
     res <- c(ks_statistic, mean(ws_res))
 
     return(res)
@@ -566,7 +568,7 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
 #' Distribution comparison
 #'
 #' This function takes a vector of parameters 'params' and a vector of the target distribution 'target_distribution'
-#' and plots the underlying probabilities.
+#' and plots the underlying probabilities. The function also returns the final values of the simulated paths.
 #'
 #' @param params A vector of parameters for a model. If the length of the vector is 7, the function assumes that the
 #' model is a jump-diffusion model. Otherwise, the function assumes that the model is either a normal distribution or
@@ -584,7 +586,6 @@ jdmodelOptim <- function(params, num_steps, target_df, sigma_bar, get_paths = FA
 #'
 #' distrCompare(params, target_distribution, num_steps = 30, target_df = df, sigma_bar = row$sigma_bar)
 #'
-#' @import MASS
 #' @import fGarch
 #' @import VarianceGamma
 #' @export
@@ -613,23 +614,23 @@ distrCompare <- function(params, target_distribution, num_steps, target_df = FAL
 
   par(mfrow=c(5,1))
   hist(final_values, breaks = 100, col = "lightblue", border = "pink", probability = TRUE)
-  lines(density(final_values), col = "red", lwd = 2)
-  lines(density(target_distribution), lwd = 2)
+  lines(stats::density(final_values), col = "red", lwd = 2)
+  lines(stats::density(target_distribution), lwd = 2)
 
   hist(lows.positive_returns, breaks = 100, col = "lightblue", border = "pink", probability = TRUE)
-  lines(density(lows.positive_returns), col = "red", lwd = 2)
-  lines(density(na.omit(real.lows.positive_returns)), lwd = 2)
+  lines(stats::density(lows.positive_returns), col = "red", lwd = 2)
+  lines(stats::density(na.omit(real.lows.positive_returns)), lwd = 2)
 
   hist(highs.positive_returns, breaks = 100, col = "lightblue", border = "pink", probability = TRUE)
-  lines(density(highs.positive_returns), col = "red", lwd = 2)
-  lines(density(na.omit(real.highs.positive_returns)), lwd = 2)
+  lines(stats::density(highs.positive_returns), col = "red", lwd = 2)
+  lines(stats::density(na.omit(real.highs.positive_returns)), lwd = 2)
 
   hist(lows.negative_returns, breaks = 100, col = "lightblue", border = "pink", probability = TRUE)
-  lines(density(lows.negative_returns), col = "red", lwd = 2)
-  lines(density(na.omit(real.lows.negative_returns)), lwd = 2)
+  lines(stats::density(lows.negative_returns), col = "red", lwd = 2)
+  lines(stats::density(na.omit(real.lows.negative_returns)), lwd = 2)
 
   hist(highs.negative_returns, breaks = 100, col = "lightblue", border = "pink", probability = TRUE)
-  lines(density(highs.negative_returns), col = "red", lwd = 2)
-  lines(density(na.omit(real.highs.negative_returns)), lwd = 2)
+  lines(stats::density(highs.negative_returns), col = "red", lwd = 2)
+  lines(stats::density(na.omit(real.highs.negative_returns)), lwd = 2)
 
 }
