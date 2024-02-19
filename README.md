@@ -30,6 +30,8 @@ distributions (GARCH) and historical data.
 
 Once the paths are statistically accurate, the stop-loss parameters can be estimated.
 
+![Figure 1](finstochplot.png)
+
 ## Installation
 
 You can install the package from CRAN using the following command:
@@ -37,5 +39,3 @@ You can install the package from CRAN using the following command:
 ```R
 install.packages("FinStochStopLoss")
 ```
-
-![Figure 1](finstochplot.png)
