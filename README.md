@@ -38,4 +38,4 @@ You can install the package from CRAN using the following command:
 install.packages("FinStochStopLoss")
 ```
 
-[Figure 1](finstochplot.pdf)
+![Figure 1](finstochplot.png)
